@@ -1,0 +1,15 @@
+version: "3.9"
+
+services:
+  insta-bot:
+    build: .
+    container_name: insta_bot
+    restart: always
+    environment:
+      BOT_TOKEN: ""
+      CHAT_ID: ""
+      INSTAGRAM_PROFILE: ""
+      CRON_SCHEDULE: "0 9 * * *"
+      RAPIDAPI_KEY: ""
+    volumes:
+      - ./data:/app/data
