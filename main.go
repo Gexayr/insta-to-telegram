@@ -9,6 +9,7 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	_ "github.com/mattn/go-sqlite3"
@@ -21,10 +22,12 @@ type ReelsResponse struct {
 			Node struct {
 				Media struct {
 					Code      string `json:"code"`
-					MediaType int    `json:"media_type"` // 2 = video/reel
+					MediaType int    `json:"media_type"`
 				} `json:"media"`
 			} `json:"node"`
 		} `json:"edges"`
+		MoreAvailable bool   `json:"more_available"`
+		NextMaxID     string `json:"next_max_id"`
 	} `json:"result"`
 }
 
@@ -34,6 +37,8 @@ var (
 )
 
 func main() {
+	rand.Seed(time.Now().UnixNano())
+
 	var err error
 
 	bot, err = tgbotapi.NewBotAPI(os.Getenv("BOT_TOKEN"))
@@ -57,10 +62,8 @@ func main() {
 	updates := bot.GetUpdatesChan(u)
 
 	for update := range updates {
-		if update.Message != nil {
-			if update.Message.Text == "/send" {
-				sendRandomLink()
-			}
+		if update.Message != nil && update.Message.Text == "/send" {
+			sendRandomLink()
 		}
 	}
 
@@ -72,8 +75,7 @@ func initDB() {
 	CREATE TABLE IF NOT EXISTS sent_links (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		shortcode TEXT UNIQUE
-	);
-	`
+	);`
 	_, err := db.Exec(query)
 	if err != nil {
 		log.Fatal(err)
@@ -84,45 +86,65 @@ func sendRandomLink() {
 	profile := os.Getenv("INSTAGRAM_PROFILE")
 	rapidAPIKey := os.Getenv("RAPIDAPI_KEY")
 
-	body, _ := json.Marshal(map[string]string{
-		"username": profile,
-		"maxId":    "",
-	})
-
-	req, err := http.NewRequest("POST", "https://instagram120.p.rapidapi.com/api/instagram/reels", bytes.NewBuffer(body))
-	if err != nil {
-		log.Println("Failed to create request:", err)
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-rapidapi-host", "instagram120.p.rapidapi.com")
-	req.Header.Set("x-rapidapi-key", rapidAPIKey)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		log.Println("Request failed:", err)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		log.Printf("Unexpected status code: %d", resp.StatusCode)
-		return
-	}
-
-	var data ReelsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		log.Println("Failed to decode response:", err)
-		return
-	}
-
+	var maxID string
 	var candidates []string
-	for _, edge := range data.Result.Edges {
-		code := edge.Node.Media.Code
-		mediaType := edge.Node.Media.MediaType
-		if mediaType == 2 && !isSent(code) {
-			candidates = append(candidates, code)
+
+	for page := 0; page < 5; page++ { // limit pages to avoid abuse
+		body, _ := json.Marshal(map[string]string{
+			"username": profile,
+			"maxId":    maxID,
+		})
+
+		req, err := http.NewRequest("POST",
+			"https://instagram120.p.rapidapi.com/api/instagram/reels",
+			bytes.NewBuffer(body),
+		)
+		if err != nil {
+			log.Println("Failed to create request:", err)
+			return
 		}
+
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("x-rapidapi-host", "instagram120.p.rapidapi.com")
+		req.Header.Set("x-rapidapi-key", rapidAPIKey)
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			log.Println("Request failed:", err)
+			return
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			log.Printf("Unexpected status code: %d", resp.StatusCode)
+			resp.Body.Close()
+			return
+		}
+
+		var data ReelsResponse
+		if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+			log.Println("Failed to decode response:", err)
+			resp.Body.Close()
+			return
+		}
+		resp.Body.Close()
+
+		for _, edge := range data.Result.Edges {
+			code := edge.Node.Media.Code
+			if edge.Node.Media.MediaType == 2 && !isSent(code) {
+				candidates = append(candidates, code)
+			}
+		}
+
+		if len(candidates) > 0 || !data.Result.MoreAvailable {
+			break
+		}
+
+		maxID = data.Result.NextMaxID
+		if maxID == "" {
+			break
+		}
+
+		time.Sleep(2 * time.Second) // avoid rate limit
 	}
 
 	if len(candidates) == 0 {
