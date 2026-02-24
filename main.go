@@ -26,8 +26,8 @@ type ReelsResponse struct {
 				} `json:"media"`
 			} `json:"node"`
 		} `json:"edges"`
-		MoreAvailable bool   `json:"more_available"`
-		NextMaxID     string `json:"next_max_id"`
+		MoreAvailable bool   `json:"has_next_page"`
+		NextMaxID     string `json:"end_cursor"`
 	} `json:"result"`
 }
 
@@ -86,7 +86,8 @@ func sendRandomLink() {
 	profile := os.Getenv("INSTAGRAM_PROFILE")
 	rapidAPIKey := os.Getenv("RAPIDAPI_KEY")
 
-	var maxID string
+	maxID := os.Getenv("MAX_ID")
+
 	var candidates []string
 
 	for page := 0; page < 5; page++ { // limit pages to avoid abuse
@@ -135,7 +136,7 @@ func sendRandomLink() {
 			}
 		}
 
-		if len(candidates) > 0 || !data.Result.MoreAvailable {
+		if !data.Result.MoreAvailable {
 			break
 		}
 
