@@ -26,8 +26,11 @@ type ReelsResponse struct {
 				} `json:"media"`
 			} `json:"node"`
 		} `json:"edges"`
-		MoreAvailable bool   `json:"has_next_page"`
-		NextMaxID     string `json:"end_cursor"`
+		MoreAvailable bool `json:"has_next_page"`
+		PageInfo      struct {
+			EndCursor string `json:"end_cursor"`
+		} `json:"page_info"`
+		NextMaxID string `json:"end_cursor"` // keep this for compatibility if it's also there
 	} `json:"result"`
 }
 
@@ -37,8 +40,6 @@ var (
 )
 
 func main() {
-	rand.Seed(time.Now().UnixNano())
-
 	var err error
 
 	bot, err = tgbotapi.NewBotAPI(os.Getenv("BOT_TOKEN"))
@@ -75,6 +76,10 @@ func initDB() {
 	CREATE TABLE IF NOT EXISTS sent_links (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		shortcode TEXT UNIQUE
+	);
+	CREATE TABLE IF NOT EXISTS config (
+		key TEXT PRIMARY KEY,
+		value TEXT
 	);`
 	_, err := db.Exec(query)
 	if err != nil {
@@ -82,15 +87,35 @@ func initDB() {
 	}
 }
 
+func getConfig(key string) string {
+	var value string
+	err := db.QueryRow("SELECT value FROM config WHERE key = ?", key).Scan(&value)
+	if err != nil {
+		return ""
+	}
+	return value
+}
+
+func setConfig(key, value string) {
+	_, err := db.Exec("INSERT INTO config(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", key, value)
+	if err != nil {
+		log.Println("Failed to save config:", err)
+	}
+}
+
 func sendRandomLink() {
 	profile := os.Getenv("INSTAGRAM_PROFILE")
 	rapidAPIKey := os.Getenv("RAPIDAPI_KEY")
 
-	maxID := os.Getenv("MAX_ID")
+	maxID := getConfig("MAX_ID")
+	if maxID == "" {
+		maxID = os.Getenv("MAX_ID")
+	}
 
 	var candidates []string
+	var lastMaxID string
 
-	for page := 0; page < 5; page++ { // limit pages to avoid abuse
+	for range 15 { // limit pages to avoid abuse
 		body, _ := json.Marshal(map[string]string{
 			"username": profile,
 			"maxId":    maxID,
@@ -136,20 +161,25 @@ func sendRandomLink() {
 			}
 		}
 
-		if !data.Result.MoreAvailable {
+		lastMaxID = data.Result.PageInfo.EndCursor
+		if lastMaxID == "" {
+			lastMaxID = data.Result.NextMaxID
+		}
+
+		if !data.Result.MoreAvailable || lastMaxID == "" {
 			break
 		}
 
-		maxID = data.Result.NextMaxID
-		if maxID == "" {
-			break
-		}
-
+		maxID = lastMaxID
 		time.Sleep(2 * time.Second) // avoid rate limit
 	}
 
 	if len(candidates) == 0 {
 		log.Println("No new reels available")
+		if lastMaxID != "" {
+			log.Println("Updating MAX_ID to:", lastMaxID)
+			setConfig("MAX_ID", lastMaxID)
+		}
 		return
 	}
 
